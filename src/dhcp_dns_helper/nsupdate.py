@@ -55,8 +55,8 @@ def _to_reverse_host_address(ip_address):
 def _add_a_record(name, ip_address):
     update = _create_update()
     update.absent(name)
-    update.add(name, app.config["TTL"], "A", ip_address)
     update.add(name, app.config["TTL"], "TXT", _record_secret(name))
+    update.add(name, app.config["TTL"], "A", ip_address)
 
     response = _query(update)
 
@@ -95,8 +95,8 @@ def add_record(name, ip_address):
 
 def _remove_a_record(name, ip_address):
     update = _create_update()
-    update.present(name, "TXT", _record_secret(name))
     update.present(name, "A", ip_address)
+    update.present(name, "TXT", _record_secret(name))
     update.delete(name)
 
     response = _query(update)
