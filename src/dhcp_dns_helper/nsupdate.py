@@ -84,6 +84,9 @@ def _add_ptr_record(name, ip_address):
 
 
 def add_record(name, ip_address):
+    if not name:
+        return False
+
     return _add_a_record(name, ip_address) and _add_ptr_record(name, ip_address)
 
 
@@ -112,4 +115,7 @@ def _remove_ptr_record(name, ip_address):
 
 
 def remove_record(name, ip_address):
+    if not name:
+        return False
+
     return _remove_a_record(name, ip_address) and _remove_ptr_record(name, ip_address)
