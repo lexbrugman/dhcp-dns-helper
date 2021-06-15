@@ -1,3 +1,4 @@
+from flask import abort
 from flask import Flask
 from flask import jsonify
 from flask import request
@@ -18,21 +19,38 @@ logger = logging.getLogger(__name__)
 app.logger.info("app initialised")
 
 
+@app.before_request
+def check_authentication_if_applicable():
+    valid_tokens = [f"Basic {token}" for token in app.config["AUTHENTICATION_TOKENS"]]
+    if request.headers.get("Authorization") not in valid_tokens:
+        abort(403)
+
+
 @app.route("/register_host", methods=["POST"])
 def register_host():
+    hostname = request.form["hostname"]
+    ip_address = request.form["ip_address"]
+
     success = nsupdate.add_record(
-        name=request.form["hostname"],
-        ip_address=request.form["ip_address"],
+        name=hostname,
+        ip_address=ip_address,
     )
+
+    app.logger.info("register: %s (%s): %s", hostname, ip_address, success)
 
     return jsonify(dict(success=success))
 
 
 @app.route("/deregister_host", methods=["POST"])
 def deregister_host():
+    hostname = request.form["hostname"]
+    ip_address = request.form["ip_address"]
+
     success = nsupdate.remove_record(
-        name=request.form["hostname"],
-        ip_address=request.form["ip_address"],
+        name=hostname,
+        ip_address=ip_address,
     )
+
+    app.logger.info("deregister: %s (%s): %s", hostname, ip_address, success)
 
     return jsonify(dict(success=success))

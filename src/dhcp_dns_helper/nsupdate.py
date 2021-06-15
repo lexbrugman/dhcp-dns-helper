@@ -24,7 +24,7 @@ def _create_update(zone=None):
 
 
 def _query(q):
-    return dns.query.tcp(q, _resolve(app.config["SERVER"]))
+    return dns.query.tcp(q, _resolve(app.config["NAMESERVER"]))
 
 
 def _network_octet_count():
@@ -35,21 +35,15 @@ def _record_secret(name):
     return hashlib.sha256(f"{name}-{app.config['RECORD_SALT']}".encode("utf-8")).hexdigest()
 
 
-def _network_octets(ip_address):
-    return ip_address.split(".")[:_network_octet_count()]
-
-
-def _host_octets(ip_address):
-    return ip_address.split(".")[_network_octet_count():]
-
-
 def _to_ptr_zone(ip_address):
-    reverse_network_address = ".".join(reversed(_network_octets(ip_address)))
+    network_octets = ip_address.split(".")[:_network_octet_count()]
+    reverse_network_address = ".".join(reversed(network_octets))
     return f"{reverse_network_address}.in-addr.arpa"
 
 
 def _to_reverse_host_address(ip_address):
-    return ".".join(reversed(_host_octets(ip_address)))
+    host_octets = ip_address.split(".")[_network_octet_count():]
+    return ".".join(reversed(host_octets))
 
 
 def _add_a_record(name, ip_address):
