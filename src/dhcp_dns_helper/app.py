@@ -36,7 +36,7 @@ def register_host():
         ip_address=ip_address,
     )
 
-    app.logger.info("register: %s (%s): %s", hostname, ip_address, success)
+    app.logger.info("register: %s (%s) via %s: %s", hostname, ip_address, request.remote_addr, success)
 
     return jsonify(dict(success=success))
 
@@ -51,6 +51,6 @@ def deregister_host():
         ip_address=ip_address,
     )
 
-    app.logger.info("deregister: %s (%s): %s", hostname, ip_address, success)
+    app.logger.info("deregister: %s (%s) via %s: %s", hostname, ip_address, request.remote_addr, success)
 
     return jsonify(dict(success=success))
