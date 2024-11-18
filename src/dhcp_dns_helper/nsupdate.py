@@ -70,6 +70,7 @@ def _add_ptr_record(name, ip_address):
     reverse_host_address = _to_reverse_host_address(ip_address)
 
     update = _create_update(zone)
+    update.absent(reverse_host_address)
     update.add(reverse_host_address, app.config["TTL"], "PTR", record_value)
 
     response = _query(update)
