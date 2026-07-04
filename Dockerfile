@@ -1,10 +1,11 @@
 FROM python:3.12-slim-bookworm
 
-ARG DHCP_DNS_HELPER_VERSION
+ARG GIT_SHA
 LABEL org.opencontainers.image.title="dhcp-dns-helper"
 LABEL org.opencontainers.image.description="HTTP wrapper around nsupdate for DHCP lease DNS updates"
-LABEL org.opencontainers.image.source="https://github.com/slim-it/dhcp-dns-helper"
-LABEL org.opencontainers.image.version="${DHCP_DNS_HELPER_VERSION}"
+LABEL org.opencontainers.image.source="https://github.com/lexbrugman/dhcp-dns-helper"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+LABEL org.opencontainers.image.version="${GIT_SHA}"
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

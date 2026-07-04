@@ -2,16 +2,13 @@
 
 This application creates an HTTP interface into nsupdate for managing DNS host records in (for example) [Bind](https://www.isc.org/bind/). Intended to be used together with a DHCP server to provide DNS host records for DHCP leases.
 
-`VERSION` is the single source of truth for the image version. CI reads it for the Docker build argument and image tag.
-
 ## Image
 
 CI publishes:
 
 ```text
-ghcr.io/slim-it/dhcp-dns-helper:<version>
-ghcr.io/slim-it/dhcp-dns-helper:latest
-ghcr.io/slim-it/dhcp-dns-helper:sha-<git-sha>
+ghcr.io/lexbrugman/dhcp-dns-helper:sha-<git-sha>
+ghcr.io/lexbrugman/dhcp-dns-helper:latest
 ```
 
 ## Configuration
@@ -33,13 +30,13 @@ AUTHENTICATION_TOKENS_JSON=["xxx"]
 ## Build locally
 
 ```sh
-docker build --build-arg DHCP_DNS_HELPER_VERSION="$(cat VERSION)" -t ghcr.io/slim-it/dhcp-dns-helper:"$(cat VERSION)" .
+docker build --build-arg GIT_SHA="$(git rev-parse HEAD)" -t ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)" .
 ```
 
 ## Run locally
 
 ```sh
-docker run --rm --env-file env.example -p 8080:8080 ghcr.io/slim-it/dhcp-dns-helper:"$(cat VERSION)"
+docker run --rm --env-file env.example -p 8080:8080 ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)"
 ```
 
 Mikrotik RouterOS
