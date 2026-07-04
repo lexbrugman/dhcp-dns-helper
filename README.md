@@ -20,12 +20,12 @@ NAMESERVER=localhost
 ZONE=xxx.local
 PREFIX_LENGTH=24
 TTL=3600
-RECORD_SALT=xxx
 KEYRING_JSON={"xxx":"xxx"}
 AUTHENTICATION_TOKENS_JSON=["xxx"]
 ```
 
-`PREFIX_LENGTH` defaults to `24` and `TTL` defaults to `3600`.
+`PREFIX_LENGTH` defaults to `24`, `TTL` defaults to `3600`, and
+`RECORD_SALT` defaults to `<ZONE>-dhcp-dns`.
 
 ## Build locally
 
