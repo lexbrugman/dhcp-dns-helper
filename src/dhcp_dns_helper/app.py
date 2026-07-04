@@ -21,9 +21,17 @@ app.logger.info("app initialised")
 
 @app.before_request
 def check_authentication_if_applicable():
+    if request.endpoint == "health":
+        return
+
     valid_tokens = [f"Basic {token}" for token in app.config["AUTHENTICATION_TOKENS"]]
     if request.headers.get("Authorization") not in valid_tokens:
         abort(403)
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify(dict(status="ok"))
 
 
 @app.route("/register_host", methods=["POST"])

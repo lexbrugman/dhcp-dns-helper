@@ -1,0 +1,7 @@
+.git
+.github
+README.md
+*.log
+/tmp
+__pycache__
+*.pyc
