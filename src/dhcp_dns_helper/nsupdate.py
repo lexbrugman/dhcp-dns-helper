@@ -1,27 +1,31 @@
 import dns.exception
 import dns.query
 import dns.rcode
+import dns.resolver
 import dns.tsigkeyring
 import dns.update
-import functools
 import hashlib
-import socket
+import ipaddress
 from flask import current_app as app
 
 QUERY_TIMEOUT = 10
 
+_resolver = dns.resolver.Resolver()
+_resolver.cache = dns.resolver.Cache()
 
-@functools.cache
+
 def _resolve(hostname):
-    # prefer IPv6, otherwise fall back to the last address returned;
-    # cached for the process lifetime, so a nameserver IP change needs a restart
-    ip_address = None
-    for (family, type, proto, canonname, sockaddr) in socket.getaddrinfo(hostname, None):
-        ip_address = sockaddr[0]
-        if family == socket.AddressFamily.AF_INET6:
-            return ip_address
+    try:
+        ipaddress.ip_address(hostname)
+        return hostname
+    except ValueError:
+        pass
 
-    return ip_address
+    # prefer IPv6; the resolver cache honors record TTLs
+    try:
+        return _resolver.resolve(hostname, "AAAA")[0].address
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return _resolver.resolve(hostname, "A")[0].address
 
 
 def _create_update(zone):

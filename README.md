@@ -16,7 +16,7 @@ ghcr.io/lexbrugman/dhcp-dns-helper:latest
 Configuration is read from environment variables:
 
 ```text
-NAMESERVER=localhost
+NAMESERVER=127.0.0.1
 ZONE=xxx.local
 PREFIX_LENGTH=24
 TTL=3600
