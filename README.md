@@ -20,12 +20,34 @@ NAMESERVER=localhost
 ZONE=xxx.local
 PREFIX_LENGTH=24
 TTL=3600
+MARKER_PREFIX=x-dyn:
 KEYRING_JSON={"xxx":"xxx"}
 AUTHENTICATION_TOKENS_JSON=["xxx"]
 ```
 
-`PREFIX_LENGTH` defaults to `24`, `TTL` defaults to `3600`, and
-`RECORD_SALT` defaults to `<ZONE>-dhcp-dns`.
+`PREFIX_LENGTH` defaults to `24` and must be `8`, `16` or `24`, `TTL` defaults
+to `3600`, `RECORD_SALT` defaults to `<ZONE>-dhcp-dns`, and `MARKER_PREFIX`
+defaults to `x-dyn:`.
+
+Keys in `KEYRING_JSON` must be `hmac-sha256` TSIG keys, and the nameserver's
+update policy must allow this application to write `A`, `PTR` and `TXT`
+records in the forward and reverse zones.
+
+## Record ownership marker
+
+Every name this application writes — forward `A` records and reverse `PTR`
+records alike — carries a sibling `TXT` record whose value is `MARKER_PREFIX`
+followed by a salted hash of the record name. The marker and the data record
+are always written in a single DNS UPDATE message, so a name is never
+observable without its marker.
+
+The marker serves two purposes:
+
+- this application only replaces or deletes names whose marker matches,
+  so it cannot clobber records it does not own
+- zone reconcilers that purge undeclared records (e.g. static-dns-helper)
+  must treat any name carrying a `TXT` value starting with `MARKER_PREFIX`
+  as dynamically managed and leave it alone
 
 ## Build locally
 

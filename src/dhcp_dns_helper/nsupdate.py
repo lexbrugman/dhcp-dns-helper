@@ -1,38 +1,45 @@
+import dns.exception
 import dns.query
 import dns.rcode
 import dns.tsigkeyring
 import dns.update
+import functools
 import hashlib
 import socket
 from flask import current_app as app
 
+QUERY_TIMEOUT = 10
 
+
+@functools.cache
 def _resolve(hostname):
+    # prefer IPv6, otherwise fall back to the last address returned;
+    # cached for the process lifetime, so a nameserver IP change needs a restart
     ip_address = None
     for (family, type, proto, canonname, sockaddr) in socket.getaddrinfo(hostname, None):
         ip_address = sockaddr[0]
-        if type == socket.AddressFamily.AF_INET6:
+        if family == socket.AddressFamily.AF_INET6:
             return ip_address
 
     return ip_address
 
 
-def _create_update(zone=None):
-    zone = zone or app.config["ZONE"]
+def _create_update(zone):
     keyring = dns.tsigkeyring.from_text(app.config["KEYRING"])
-    return dns.update.Update(zone, keyring=keyring, keyalgorithm="hmac-md5.sig-alg.reg.int")
+    return dns.update.Update(zone, keyring=keyring, keyalgorithm="hmac-sha256")
 
 
 def _query(q):
-    return dns.query.tcp(q, _resolve(app.config["NAMESERVER"]))
+    return dns.query.tcp(q, _resolve(app.config["NAMESERVER"]), timeout=QUERY_TIMEOUT)
 
 
 def _network_octet_count():
-    return round(app.config["PREFIX_LENGTH"] / 8)
+    return app.config["PREFIX_LENGTH"] // 8
 
 
 def _record_secret(name):
-    return hashlib.sha256(f"{name}-{app.config['RECORD_SALT']}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{name}-{app.config['RECORD_SALT']}".encode("utf-8")).hexdigest()
+    return f"{app.config['MARKER_PREFIX']}{digest}"
 
 
 def _to_ptr_zone(ip_address):
@@ -46,77 +53,81 @@ def _to_reverse_host_address(ip_address):
     return ".".join(reversed(host_octets))
 
 
-def _add_a_record(name, ip_address):
-    update = _create_update()
-    update.absent(name)
-    update.add(name, app.config["TTL"], "TXT", _record_secret(name))
-    update.add(name, app.config["TTL"], "A", ip_address)
-
-    response = _query(update)
-
-    if response.rcode() == dns.rcode.YXDOMAIN:
-        update = _create_update()
-        update.present(name, "TXT", _record_secret(name))
-        update.replace(name, app.config["TTL"], "A", ip_address)
-
-        response = _query(update)
-
-    return response.rcode() == dns.rcode.NOERROR
+def _to_fqdn(name):
+    return f"{name}.{app.config['ZONE']}."
 
 
-def _add_ptr_record(name, ip_address):
-    record_value = f"{name}.{app.config['ZONE']}."
-    zone = _to_ptr_zone(ip_address)
-    reverse_host_address = _to_reverse_host_address(ip_address)
+def _succeeded(operation, zone, name, response):
+    if response.rcode() == dns.rcode.NOERROR:
+        return True
+
+    app.logger.warning("%s of %s in %s failed: %s", operation, name, zone, dns.rcode.to_text(response.rcode()))
+    return False
+
+
+def _is_absent(zone, name):
+    check = _create_update(zone)
+    check.absent(name)
+    return _query(check).rcode() == dns.rcode.NOERROR
+
+
+def _upsert(zone, name, rdtype, value):
+    marker = _record_secret(name)
 
     update = _create_update(zone)
-    update.absent(reverse_host_address)
-    update.add(reverse_host_address, app.config["TTL"], "PTR", record_value)
+    update.absent(name)
+    update.add(name, app.config["TTL"], "TXT", marker)
+    update.add(name, app.config["TTL"], rdtype, value)
 
     response = _query(update)
 
     if response.rcode() == dns.rcode.YXDOMAIN:
         update = _create_update(zone)
-        update.replace(reverse_host_address, app.config["TTL"], "PTR", record_value)
+        update.present(name, "TXT", marker)
+        update.replace(name, app.config["TTL"], rdtype, value)
 
         response = _query(update)
 
-    return response.rcode() == dns.rcode.NOERROR
+    return _succeeded("upsert", zone, name, response)
+
+
+def _remove(zone, name, rdtype, value):
+    update = _create_update(zone)
+    update.present(name, rdtype, value)
+    update.present(name, "TXT", _record_secret(name))
+    update.delete(name)
+
+    response = _query(update)
+
+    if response.rcode() == dns.rcode.NXRRSET and _is_absent(zone, name):
+        return True
+
+    return _succeeded("removal", zone, name, response)
 
 
 def add_record(name, ip_address):
     if not name:
         return False
 
-    return _add_a_record(name, ip_address) and _add_ptr_record(name, ip_address)
-
-
-def _remove_a_record(name, ip_address):
-    update = _create_update()
-    update.present(name, "A", ip_address)
-    update.present(name, "TXT", _record_secret(name))
-    update.delete(name)
-
-    response = _query(update)
-
-    return response.rcode() == dns.rcode.NOERROR
-
-
-def _remove_ptr_record(name, ip_address):
-    zone = _to_ptr_zone(ip_address)
-    reverse_host_address = _to_reverse_host_address(ip_address)
-
-    update = _create_update(zone)
-    update.present(reverse_host_address, "PTR", f"{name}.{app.config['ZONE']}.")
-    update.delete(reverse_host_address)
-
-    response = _query(update)
-
-    return response.rcode() == dns.rcode.NOERROR
+    try:
+        return _upsert(app.config["ZONE"], name, "A", ip_address) and _upsert(
+            _to_ptr_zone(ip_address), _to_reverse_host_address(ip_address), "PTR", _to_fqdn(name)
+        )
+    except (dns.exception.DNSException, OSError) as e:
+        app.logger.error("registration of %s (%s) failed: %s", name, ip_address, e)
+        return False
 
 
 def remove_record(name, ip_address):
     if not name:
         return False
 
-    return _remove_a_record(name, ip_address) and _remove_ptr_record(name, ip_address)
+    try:
+        forward_removed = _remove(app.config["ZONE"], name, "A", ip_address)
+        reverse_removed = _remove(
+            _to_ptr_zone(ip_address), _to_reverse_host_address(ip_address), "PTR", _to_fqdn(name)
+        )
+        return forward_removed and reverse_removed
+    except (dns.exception.DNSException, OSError) as e:
+        app.logger.error("deregistration of %s (%s) failed: %s", name, ip_address, e)
+        return False
