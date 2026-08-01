@@ -54,22 +54,34 @@ def health():
     return jsonify(status)
 
 
-HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$")
+
+
+def _valid_hostname(value):
+    hostname = value.lower() if isinstance(value, str) else ""
+    return hostname if HOSTNAME_RE.match(hostname) else None
+
+
+def _valid_ip_address(value):
+    try:
+        ipaddress.IPv4Address(value if isinstance(value, str) else None)
+    except ValueError:
+        return None
+    return value
 
 
 def _parse_hostname(value):
-    hostname = value.lower() if isinstance(value, str) else ""
-    if not HOSTNAME_RE.match(hostname):
+    hostname = _valid_hostname(value)
+    if hostname is None:
         abort(400, description="hostname must be a single DNS label")
     return hostname
 
 
 def _parse_ip_address(value):
-    try:
-        ipaddress.IPv4Address(value if isinstance(value, str) else None)
-    except ValueError:
+    ip_address = _valid_ip_address(value)
+    if ip_address is None:
         abort(400, description="ip_address must be a valid IPv4 address")
-    return value
+    return ip_address
 
 
 def _update_host(action, update_record):
@@ -113,21 +125,35 @@ def _parse_networks(values):
     return networks
 
 
+def _describe(value):
+    return str(value)[:64]
+
+
 def _parse_hosts(values, networks):
     if not isinstance(values, list):
         abort(400, description="hosts must be a list")
 
     hosts = []
+    skipped = []
     for entry in values:
         if not isinstance(entry, dict):
-            abort(400, description="each host must be an object")
-        hostname = _parse_hostname(entry.get("hostname"))
-        ip_address = _parse_ip_address(entry.get("ip_address"))
-        if not any(ipaddress.IPv4Address(ip_address) in network for network in networks):
-            abort(400, description=f"{ip_address} is outside the declared networks")
-        hosts.append(dict(hostname=hostname, ip_address=ip_address))
+            skipped.append(dict(entry=_describe(entry), reason="host must be an object"))
+            continue
 
-    return hosts
+        hostname = _valid_hostname(entry.get("hostname"))
+        ip_address = _valid_ip_address(entry.get("ip_address"))
+        entry_description = dict(hostname=_describe(entry.get("hostname")), ip_address=_describe(entry.get("ip_address")))
+
+        if hostname is None:
+            skipped.append(dict(**entry_description, reason="hostname must be a single DNS label"))
+        elif ip_address is None:
+            skipped.append(dict(**entry_description, reason="ip_address must be a valid IPv4 address"))
+        elif not any(ipaddress.IPv4Address(ip_address) in network for network in networks):
+            skipped.append(dict(**entry_description, reason="outside the declared networks"))
+        else:
+            hosts.append(dict(hostname=hostname, ip_address=ip_address))
+
+    return hosts, skipped
 
 
 @app.route("/sync_hosts", methods=["POST"])
@@ -137,7 +163,7 @@ def sync_hosts():
         abort(400, description="body must be a JSON object")
 
     networks = _parse_networks(payload.get("networks"))
-    hosts = _parse_hosts(payload.get("hosts"), networks)
+    hosts, skipped = _parse_hosts(payload.get("hosts"), networks)
     dry_run = bool(payload.get("dry_run", False))
 
     if not sync.LOCK.acquire(blocking=False):
@@ -150,8 +176,13 @@ def sync_hosts():
     finally:
         sync.LOCK.release()
 
+    report["skipped"] = skipped
+
+    for entry in skipped:
+        app.logger.warning("sync skipped host %s: %s", entry.get("hostname", entry.get("entry")), entry["reason"])
+
     app.logger.info(
-        "sync of %d host(s) in %s via %s: healed=%d refreshed=%d expunged=%d unverifiable=%d dry_run=%s success=%s",
+        "sync of %d host(s) in %s via %s: healed=%d refreshed=%d expunged=%d unverifiable=%d skipped=%d dry_run=%s success=%s",
         len(hosts),
         ", ".join(str(network) for network in networks),
         request.remote_addr,
@@ -159,6 +190,7 @@ def sync_hosts():
         report["refreshed"],
         len(report["expunged"]),
         len(report["unverifiable"]),
+        len(skipped),
         report["dry_run"],
         report["success"],
     )

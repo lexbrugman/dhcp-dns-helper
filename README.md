@@ -26,6 +26,9 @@ Keys in `KEYRING_JSON` must be `hmac-sha256` TSIG keys, and the nameserver's
 update policy must allow this application to write `A`, `PTR` and `TXT`
 records in the forward and reverse zones. The sync endpoint additionally
 requires zone transfers (`allow-transfer`) for the same key on both zones.
+Hostnames containing underscores additionally need `check-names ignore` on the
+zone — BIND otherwise refuses the update, which surfaces as `success: false`
+rather than a rejected request.
 
 ## API
 
@@ -41,9 +44,11 @@ token, not RFC 7617 credentials — do not base64-encode it. A mismatch is `403`
 | `POST /sync_hosts`      | JSON (see [Full table sync](#full-table-sync)) | Reconcile the zones against the full lease table |
 | `GET /health`           | —                                    | Liveness, plus age and result of the last sync |
 
-`hostname` must be a single DNS label and `ip_address` a valid IPv4 address;
-anything else is `400`. `/register_host` and `/deregister_host` respond with
-`{"success": <bool>}`.
+`hostname` must be a single DNS label — letters, digits, `-` and `_`, starting
+and ending alphanumeric, at most 63 characters, lowercased on the way in — and
+`ip_address` a valid IPv4 address. On the single-host endpoints anything else
+is `400`; `/sync_hosts` skips the offending host instead. `/register_host` and
+`/deregister_host` respond with `{"success": <bool>}`.
 
 ## Record ownership marker
 
@@ -96,10 +101,16 @@ been vouched for within `SYNC_GRACE_SECONDS`. Records without a timestamp
   merely incomplete host list cannot cause deletions either: every record
   vouched within `SYNC_GRACE_SECONDS` is protected until a later complete
   sync stops vouching for it
+- a host that fails validation — malformed hostname, bad address, or an
+  address outside `networks` — is skipped with a logged warning rather than
+  failing the request, so one odd lease can't block the whole reconciliation;
+  a skipped host is simply an undeclared one, protected by
+  `SYNC_GRACE_SECONDS` like any other absence. A malformed payload *envelope*
+  (bad JSON, bad `networks`, `hosts` not a list) is still rejected whole
 - `dry_run: true` reports what would happen without writing anything
-- the response lists `healed`, `refreshed`, `expunged` and `unverifiable`
+- the response lists `healed`, `refreshed`, `expunged`, `unverifiable`
   (marker-prefixed records whose hash doesn't verify; these are never touched
-  and need manual cleanup)
+  and need manual cleanup) and `skipped` (rejected hosts, with the reason)
 - syncs do not overlap: a request arriving while one is running is `409`, and
   a failure talking to the nameserver is `502`
 

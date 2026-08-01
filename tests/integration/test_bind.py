@@ -43,22 +43,36 @@ def test_requests_require_auth(client):
         ("host0", "999.1.1.1"),
         ("", "10.42.1.2"),
         ("host0", ""),
+        ("_acme-challenge", "10.42.1.2"),  # the service/validation namespace stays off limits
+        ("_host", "10.42.1.2"),
+        ("host_", "10.42.1.2"),
     ],
 )
 def test_invalid_input_is_rejected(client, hostname, ip_address):
     assert register(client, hostname, ip_address).status_code == 400
 
 
-def test_register_creates_marked_records(client, bind_server):
-    assert register(client, "host1", "10.42.1.10").get_json() == dict(success=True)
+@pytest.mark.parametrize(
+    ("hostname", "ip_address"),
+    [
+        ("host1", "10.42.1.10"),
+        ("desktop_abc_01", "10.42.1.60"),
+        ("a_b-c_1", "10.42.1.61"),
+        ("x", "10.42.1.62"),
+        ("h" * 63, "10.42.1.63"),
+    ],
+)
+def test_register_creates_marked_records(client, bind_server, hostname, ip_address):
+    assert register(client, hostname, ip_address).get_json() == dict(success=True)
+    last_octet = ip_address.rsplit(".", 1)[1]
 
     forward = axfr(FORWARD, bind_server)
-    assert values(forward, f"host1.{FORWARD}", dns.rdatatype.A) == {"10.42.1.10"}
-    assert_marked(forward, f"host1.{FORWARD}", "host1")
+    assert values(forward, f"{hostname}.{FORWARD}", dns.rdatatype.A) == {ip_address}
+    assert_marked(forward, f"{hostname}.{FORWARD}", hostname)
 
     reverse = axfr(REVERSE, bind_server)
-    assert values(reverse, f"10.{REVERSE}", dns.rdatatype.PTR) == {f"host1.{FORWARD}."}
-    assert_marked(reverse, f"10.{REVERSE}", "10")
+    assert values(reverse, f"{last_octet}.{REVERSE}", dns.rdatatype.PTR) == {f"{hostname}.{FORWARD}."}
+    assert_marked(reverse, f"{last_octet}.{REVERSE}", last_octet)
 
 
 def test_reregistration_is_idempotent(client, bind_server):

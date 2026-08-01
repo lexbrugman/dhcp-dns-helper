@@ -95,19 +95,42 @@ def test_truncated_body_rejected_and_nothing_expunged(client, bind_server):
 @pytest.mark.parametrize(
     ("networks", "hosts"),
     [
-        ([NETWORK], [dict(hostname="x1", ip_address="10.42.2.5")]),  # host outside declared networks
         (["10.42.0.0/16"], []),  # wider than PREFIX_LENGTH
         (["not-a-network"], []),
         ([], []),
         ("10.42.1.0/24", []),
-        ([NETWORK], [dict(hostname="bad_name!", ip_address="10.42.1.5")]),
-        ([NETWORK], [dict(hostname="x1")]),
-        ([NETWORK], ["not-an-object"]),
         ([NETWORK], "not-a-list"),
     ],
 )
 def test_invalid_sync_payloads_rejected(client, networks, hosts):
     assert sync_hosts(client, networks, hosts).status_code == 400
+
+
+def test_sync_skips_bad_hosts_and_applies_the_rest(client, bind_server):
+    report = sync_hosts(
+        client,
+        ["10.42.1.160/28"],
+        [
+            dict(hostname="sync7", ip_address="10.42.1.161"),
+            dict(hostname="bad!name", ip_address="10.42.1.162"),
+            dict(hostname="sync8", ip_address="999.1.1.1"),
+            dict(hostname="sync9", ip_address="10.42.9.9"),
+            "not-an-object",
+        ],
+    ).get_json()
+
+    assert report["success"] is True
+    assert report["healed"] == ["sync7 (10.42.1.161)"]
+    assert [entry["reason"] for entry in report["skipped"]] == [
+        "hostname must be a single DNS label",
+        "ip_address must be a valid IPv4 address",
+        "outside the declared networks",
+        "host must be an object",
+    ]
+
+    forward = axfr(FORWARD, bind_server)
+    assert values(forward, f"sync7.{FORWARD}", dns.rdatatype.A) == {"10.42.1.161"}
+    assert rrset(forward, f"bad!name.{FORWARD}", dns.rdatatype.A) is None
 
 
 def test_sync_refreshes_listed_hosts(client, bind_server):

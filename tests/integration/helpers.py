@@ -38,6 +38,7 @@ zone "{zone}" {{
     file "/var/lib/bind/{zone}.zone";
     allow-update {{ key "update-key"; }};
     allow-transfer {{ key "update-key"; }};
+    check-names ignore;
 }};
 """
 
