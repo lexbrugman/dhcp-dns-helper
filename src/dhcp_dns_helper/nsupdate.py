@@ -6,11 +6,14 @@ import dns.rdatatype
 import dns.resolver
 import dns.tsigkeyring
 import dns.update
+import dns.zone
 import hashlib
 import ipaddress
+import time
 from flask import current_app as app
 
 QUERY_TIMEOUT = 10
+TRANSFER_TIMEOUT = 60
 
 _resolver = dns.resolver.Resolver()
 _resolver.cache = dns.resolver.Cache()
@@ -49,6 +52,10 @@ def _record_secret(name):
     return f"{app.config['MARKER_PREFIX']}{digest}"
 
 
+def _timestamp_record():
+    return f"{app.config['TIMESTAMP_PREFIX']}{int(time.time())}"
+
+
 def _to_ptr_zone(ip_address):
     network_octets = ip_address.split(".")[:_network_octet_count()]
     reverse_network_address = ".".join(reversed(network_octets))
@@ -72,10 +79,26 @@ def _succeeded(operation, zone, name, response):
     return False
 
 
-def _current_addresses(name):
-    query = dns.message.make_query(_to_fqdn(name), dns.rdatatype.A)
+def _lookup(zone, name, rdtype):
+    query = dns.message.make_query(f"{name}.{zone}.", rdtype)
     response = _query(query)
-    return {rdata.address for rrset in response.answer if rrset.rdtype == dns.rdatatype.A for rdata in rrset}
+    return [rdata for answer in response.answer if answer.rdtype == rdtype for rdata in answer]
+
+
+def _current_addresses(name):
+    return {rdata.address for rdata in _lookup(app.config["ZONE"], name, dns.rdatatype.A)}
+
+
+def _owned_txt_values(zone, name):
+    """Current TXT values at the name, or None when our marker isn't among them.
+
+    RFC 2136 value-dependent prerequisites compare the entire RRset, so guarded
+    updates must assert every observed TXT value, not just the marker.
+    """
+    values = [b"".join(rdata.strings).decode("utf-8", errors="replace") for rdata in _lookup(zone, name, dns.rdatatype.TXT)]
+    if _record_secret(name) not in values:
+        return None
+    return values
 
 
 def _is_absent(zone, name):
@@ -90,13 +113,22 @@ def _upsert(zone, name, rdtype, value):
     update = _create_update(zone)
     update.absent(name)
     update.add(name, app.config["TTL"], "TXT", marker)
+    update.add(name, app.config["TTL"], "TXT", _timestamp_record())
     update.add(name, app.config["TTL"], rdtype, value)
 
     response = _query(update)
 
     if response.rcode() == dns.rcode.YXDOMAIN:
+        owned = _owned_txt_values(zone, name)
+        if owned is None:
+            app.logger.warning("upsert of %s in %s failed: name exists without our marker", name, zone)
+            return False
+
         update = _create_update(zone)
-        update.present(name, "TXT", marker)
+        for value_ in owned:
+            update.present(name, "TXT", value_)
+        update.replace(name, app.config["TTL"], "TXT", marker)
+        update.add(name, app.config["TTL"], "TXT", _timestamp_record())
         update.replace(name, app.config["TTL"], rdtype, value)
 
         response = _query(update)
@@ -104,10 +136,48 @@ def _upsert(zone, name, rdtype, value):
     return _succeeded("upsert", zone, name, response)
 
 
+def refresh_timestamp(zone, name):
+    owned = _owned_txt_values(zone, name)
+    if owned is None:
+        app.logger.warning("refresh of %s in %s failed: name has no verified marker", name, zone)
+        return False
+
+    update = _create_update(zone)
+    for value in owned:
+        update.present(name, "TXT", value)
+    update.replace(name, app.config["TTL"], "TXT", _record_secret(name))
+    update.add(name, app.config["TTL"], "TXT", _timestamp_record())
+
+    return _succeeded("refresh", zone, name, _query(update))
+
+
+def axfr(zone):
+    keyring = dns.tsigkeyring.from_text(app.config["KEYRING"])
+    xfr = dns.query.xfr(
+        _resolve(app.config["NAMESERVER"]),
+        zone,
+        port=app.config["NAMESERVER_PORT"],
+        keyring=keyring,
+        keyalgorithm="hmac-sha256",
+        timeout=QUERY_TIMEOUT,
+        lifetime=TRANSFER_TIMEOUT,
+        relativize=False,
+    )
+    return dns.zone.from_xfr(xfr, relativize=False)
+
+
 def _remove(zone, name, rdtype, value):
+    owned = _owned_txt_values(zone, name)
+    if owned is None:
+        if _is_absent(zone, name):
+            return True
+        app.logger.warning("removal of %s in %s failed: name has no verified marker", name, zone)
+        return False
+
     update = _create_update(zone)
     update.present(name, rdtype, value)
-    update.present(name, "TXT", _record_secret(name))
+    for txt_value in owned:
+        update.present(name, "TXT", txt_value)
     update.delete(name)
 
     response = _query(update)

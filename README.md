@@ -22,25 +22,35 @@ ZONE=xxx.local
 PREFIX_LENGTH=24
 TTL=3600
 MARKER_PREFIX=x-dyn:
+TIMESTAMP_PREFIX=x-dyn-ts:
+SYNC_GRACE_SECONDS=3600
 KEYRING_JSON={"xxx":"xxx"}
 AUTHENTICATION_TOKENS_JSON=["xxx"]
 ```
 
 `NAMESERVER_PORT` defaults to `53`, `PREFIX_LENGTH` defaults to `24` and must
 be `8`, `16` or `24`, `TTL` defaults to `3600`, `RECORD_SALT` defaults to
-`<ZONE>-dhcp-dns`, and `MARKER_PREFIX` defaults to `x-dyn:`.
+`<ZONE>-dhcp-dns`, `MARKER_PREFIX` defaults to `x-dyn:`, `TIMESTAMP_PREFIX`
+defaults to `x-dyn-ts:`, and `SYNC_GRACE_SECONDS` defaults to `3600`.
 
 Keys in `KEYRING_JSON` must be `hmac-sha256` TSIG keys, and the nameserver's
 update policy must allow this application to write `A`, `PTR` and `TXT`
-records in the forward and reverse zones.
+records in the forward and reverse zones. The sync endpoint additionally
+requires zone transfers (`allow-transfer`) for the same key on both zones.
 
 ## Record ownership marker
 
 Every name this application writes — forward `A` records and reverse `PTR`
-records alike — carries a sibling `TXT` record whose value is `MARKER_PREFIX`
-followed by a salted hash of the record name. The marker and the data record
-are always written in a single DNS UPDATE message, so a name is never
-observable without its marker.
+records alike — carries two sibling `TXT` records:
+
+- an ownership marker: `MARKER_PREFIX` followed by a salted hash of the
+  record name
+- a last-vouched timestamp: `TIMESTAMP_PREFIX` followed by a unix epoch,
+  rewritten on every registration and every sync
+
+Both are always written or replaced together with the data record in single
+DNS UPDATE messages, so a name is never observable with a timestamp but
+without its marker.
 
 The marker serves two purposes:
 
@@ -48,7 +58,86 @@ The marker serves two purposes:
   so it cannot clobber records it does not own
 - zone reconcilers that purge undeclared records (e.g. static-dns-helper)
   must treat any name carrying a `TXT` value starting with `MARKER_PREFIX`
-  as dynamically managed and leave it alone
+  as dynamically managed and leave the **entire name** alone — this per-name
+  exclusion is what also protects the timestamp record, so reconcilers must
+  not purge per record type, and both tools must agree on `MARKER_PREFIX`
+
+## Full table sync
+
+`POST /sync_hosts` reconciles the zones against the DHCP server's complete
+bound-lease table, catching whatever the lease-event endpoints missed: it
+re-adds missing or wrong records, re-vouches (timestamps) every listed host,
+and expunges managed records that are absent from the table **and** have not
+been vouched for within `SYNC_GRACE_SECONDS`. Records without a timestamp
+(written before this feature) count as maximally stale.
+
+```json
+{
+  "networks": ["10.0.0.0/24"],
+  "hosts": [
+    {"hostname": "host-a", "ip_address": "10.0.0.10"},
+    {"hostname": "host-b", "ip_address": "10.0.0.11"}
+  ],
+  "dry_run": false
+}
+```
+
+- `networks` scopes authority: only records whose address falls inside are
+  vouched or expunged; each network must be at least as narrow as
+  `PREFIX_LENGTH`
+- a truncated request body fails JSON parsing and is rejected whole, and a
+  merely incomplete host list cannot cause deletions either: every record
+  vouched within `SYNC_GRACE_SECONDS` is protected until a later complete
+  sync stops vouching for it
+- `dry_run: true` reports what would happen without writing anything
+- the response lists `healed`, `refreshed`, `expunged` and `unverifiable`
+  (marker-prefixed records whose hash doesn't verify; these are never touched
+  and need manual cleanup)
+
+Set `SYNC_GRACE_SECONDS` to 2–3× the sync schedule interval: a host missing
+from a single sync (snapshot race, failed request) stays protected until well
+past the next one. `/health` reports the age and result of the last applied
+sync. Roll out by running a sync with `dry_run` first and reviewing the
+response before enabling the schedule.
+
+Mikrotik RouterOS scheduler script for feeding the sync:
+
+```
+:local webservice "https://dhcp-dns.example.local"
+:local token "xxx"
+
+:local networks ""
+/ip dhcp-server network
+:foreach network in=[find] do={
+  :local address [get $network address]
+  :if ([:len $networks] > 0) do={ :set networks ($networks . ",") }
+  :set networks ($networks . "\"$address\"")
+}
+
+:local hosts ""
+/ip dhcp-server lease
+:foreach lease in=[find where status="bound"] do={
+  :local hostname [get $lease host-name]
+  :local address [get $lease address]
+  :if ([:len $hostname] > 0) do={
+    :if ([:len $hosts] > 0) do={ :set hosts ($hosts . ",") }
+    :set hosts ($hosts . "{\"hostname\":\"$hostname\",\"ip_address\":\"$address\"}")
+  }
+}
+
+:local body "{\"networks\":[$networks],\"hosts\":[$hosts]}"
+/tool fetch http-method=post keep-result=no http-header-field="Authorization: Basic $token,Content-Type: application/json" http-data=$body url="$webservice/sync_hosts"
+```
+
+(this script needs `read`, `test` and `policy` permissions appropriate for
+scheduler use)
+
+The declared networks are derived from `/ip dhcp-server network`, so the
+script never duplicates subnet configuration. If only some DHCP networks
+should feed DNS, filter the `find` (e.g. by `comment`) — the lease loop then
+needs the same filter, since a posted host outside the declared networks
+rejects the request. Each DHCP network must also be at least as narrow as
+the app's `PREFIX_LENGTH`.
 
 ## Tests
 
