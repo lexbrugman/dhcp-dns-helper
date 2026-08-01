@@ -1,0 +1,3 @@
+-r src/requirements.txt
+pytest==9.1.1
+testcontainers==4.15.0

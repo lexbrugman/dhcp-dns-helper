@@ -17,6 +17,7 @@ Configuration is read from environment variables:
 
 ```text
 NAMESERVER=127.0.0.1
+NAMESERVER_PORT=53
 ZONE=xxx.local
 PREFIX_LENGTH=24
 TTL=3600
@@ -25,9 +26,9 @@ KEYRING_JSON={"xxx":"xxx"}
 AUTHENTICATION_TOKENS_JSON=["xxx"]
 ```
 
-`PREFIX_LENGTH` defaults to `24` and must be `8`, `16` or `24`, `TTL` defaults
-to `3600`, `RECORD_SALT` defaults to `<ZONE>-dhcp-dns`, and `MARKER_PREFIX`
-defaults to `x-dyn:`.
+`NAMESERVER_PORT` defaults to `53`, `PREFIX_LENGTH` defaults to `24` and must
+be `8`, `16` or `24`, `TTL` defaults to `3600`, `RECORD_SALT` defaults to
+`<ZONE>-dhcp-dns`, and `MARKER_PREFIX` defaults to `x-dyn:`.
 
 Keys in `KEYRING_JSON` must be `hmac-sha256` TSIG keys, and the nameserver's
 update policy must allow this application to write `A`, `PTR` and `TXT`
@@ -48,6 +49,16 @@ The marker serves two purposes:
 - zone reconcilers that purge undeclared records (e.g. static-dns-helper)
   must treat any name carrying a `TXT` value starting with `MARKER_PREFIX`
   as dynamically managed and leave it alone
+
+## Tests
+
+```sh
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+The integration tests spin up a throwaway BIND via testcontainers and are
+skipped automatically when no container API socket is reachable.
 
 ## Build locally
 

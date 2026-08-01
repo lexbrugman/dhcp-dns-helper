@@ -1,6 +1,8 @@
 import dns.exception
+import dns.message
 import dns.query
 import dns.rcode
+import dns.rdatatype
 import dns.resolver
 import dns.tsigkeyring
 import dns.update
@@ -34,7 +36,8 @@ def _create_update(zone):
 
 
 def _query(q):
-    return dns.query.tcp(q, _resolve(app.config["NAMESERVER"]), timeout=QUERY_TIMEOUT)
+    server = _resolve(app.config["NAMESERVER"])
+    return dns.query.tcp(q, server, port=app.config["NAMESERVER_PORT"], timeout=QUERY_TIMEOUT)
 
 
 def _network_octet_count():
@@ -67,6 +70,12 @@ def _succeeded(operation, zone, name, response):
 
     app.logger.warning("%s of %s in %s failed: %s", operation, name, zone, dns.rcode.to_text(response.rcode()))
     return False
+
+
+def _current_addresses(name):
+    query = dns.message.make_query(_to_fqdn(name), dns.rdatatype.A)
+    response = _query(query)
+    return {rdata.address for rrset in response.answer if rrset.rdtype == dns.rdatatype.A for rdata in rrset}
 
 
 def _is_absent(zone, name):
@@ -114,9 +123,25 @@ def add_record(name, ip_address):
         return False
 
     try:
-        return _upsert(app.config["ZONE"], name, "A", ip_address) and _upsert(
+        previous_addresses = _current_addresses(name) - {ip_address}
+        if previous_addresses:
+            app.logger.warning(
+                "registration of %s (%s) replaces existing address %s",
+                name,
+                ip_address,
+                ", ".join(sorted(previous_addresses)),
+            )
+
+        registered = _upsert(app.config["ZONE"], name, "A", ip_address) and _upsert(
             _to_ptr_zone(ip_address), _to_reverse_host_address(ip_address), "PTR", _to_fqdn(name)
         )
+
+        if registered:
+            # best effort: the marker prerequisites make this a no-op if the old address was never ours
+            for previous_address in previous_addresses:
+                _remove(_to_ptr_zone(previous_address), _to_reverse_host_address(previous_address), "PTR", _to_fqdn(name))
+
+        return registered
     except (dns.exception.DNSException, OSError) as e:
         app.logger.error("registration of %s (%s) failed: %s", name, ip_address, e)
         return False

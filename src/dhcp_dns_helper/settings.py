@@ -14,6 +14,7 @@ def _json_env(name):
 
 
 NAMESERVER = _required_env("NAMESERVER")
+NAMESERVER_PORT = int(os.environ.get("NAMESERVER_PORT", "53"))
 ZONE = _required_env("ZONE")
 PREFIX_LENGTH = int(os.environ.get("PREFIX_LENGTH", "24"))
 TTL = int(os.environ.get("TTL", "3600"))
