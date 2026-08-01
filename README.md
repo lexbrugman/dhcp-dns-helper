@@ -2,41 +2,48 @@
 
 This application creates an HTTP interface into nsupdate for managing DNS host records in (for example) [Bind](https://www.isc.org/bind/). Intended to be used together with a DHCP server to provide DNS host records for DHCP leases.
 
-## Image
-
-CI publishes:
-
-```text
-ghcr.io/lexbrugman/dhcp-dns-helper:sha-<git-sha>
-ghcr.io/lexbrugman/dhcp-dns-helper:latest
-```
-
 ## Configuration
 
 Configuration is read from environment variables:
 
-```text
-NAMESERVER=127.0.0.1
-NAMESERVER_PORT=53
-ZONE=xxx.local
-PREFIX_LENGTH=24
-TTL=3600
-MARKER_PREFIX=x-dyn:
-TIMESTAMP_PREFIX=x-dyn-ts:
-SYNC_GRACE_SECONDS=3600
-KEYRING_JSON={"xxx":"xxx"}
-AUTHENTICATION_TOKENS_JSON=["xxx"]
-```
+| Variable                     | Default            | Description                                              |
+| ---------------------------- | ------------------ | -------------------------------------------------------- |
+| `NAMESERVER`                 | *required*         | Nameserver to send DNS UPDATE and zone transfers to       |
+| `NAMESERVER_PORT`            | `53`               |                                                           |
+| `ZONE`                       | *required*         | Forward zone, e.g. `xxx.local`                            |
+| `PREFIX_LENGTH`              | `24`               | Reverse zone width; must be `8`, `16` or `24`             |
+| `TTL`                        | `3600`             | TTL of the records written                                |
+| `RECORD_SALT`                | `<ZONE>-dhcp-dns`  | Salt for the ownership marker hash                        |
+| `MARKER_PREFIX`              | `x-dyn:`           | `TXT` prefix identifying records this app owns            |
+| `TIMESTAMP_PREFIX`           | `x-dyn-ts:`        | `TXT` prefix carrying the last-vouched timestamp          |
+| `SYNC_GRACE_SECONDS`         | `3600`             | How long an unvouched record survives a sync              |
+| `KEYRING_JSON`               | *required*         | TSIG keyring, e.g. `{"keyname":"secret"}`                 |
+| `AUTHENTICATION_TOKENS_JSON` | *required*         | Accepted API tokens, e.g. `["xxx"]`                       |
 
-`NAMESERVER_PORT` defaults to `53`, `PREFIX_LENGTH` defaults to `24` and must
-be `8`, `16` or `24`, `TTL` defaults to `3600`, `RECORD_SALT` defaults to
-`<ZONE>-dhcp-dns`, `MARKER_PREFIX` defaults to `x-dyn:`, `TIMESTAMP_PREFIX`
-defaults to `x-dyn-ts:`, and `SYNC_GRACE_SECONDS` defaults to `3600`.
+See [`env.example`](env.example) for a copy-pasteable starting point.
 
 Keys in `KEYRING_JSON` must be `hmac-sha256` TSIG keys, and the nameserver's
 update policy must allow this application to write `A`, `PTR` and `TXT`
 records in the forward and reverse zones. The sync endpoint additionally
 requires zone transfers (`allow-transfer`) for the same key on both zones.
+
+## API
+
+Every endpoint except `/health` requires an `Authorization` header holding the
+literal string `Basic <token>`, where `<token>` is one of
+`AUTHENTICATION_TOKENS_JSON`. Despite the scheme name this is a bare shared
+token, not RFC 7617 credentials — do not base64-encode it. A mismatch is `403`.
+
+| Endpoint             | Body                                    | Purpose                                     |
+| -------------------- | --------------------------------------- | ------------------------------------------- |
+| `POST /register_host`   | form: `hostname`, `ip_address`       | Create/replace the records for one lease    |
+| `POST /deregister_host` | form: `hostname`, `ip_address`       | Remove the records for one lease            |
+| `POST /sync_hosts`      | JSON (see [Full table sync](#full-table-sync)) | Reconcile the zones against the full lease table |
+| `GET /health`           | —                                    | Liveness, plus age and result of the last sync |
+
+`hostname` must be a single DNS label and `ip_address` a valid IPv4 address;
+anything else is `400`. `/register_host` and `/deregister_host` respond with
+`{"success": <bool>}`.
 
 ## Record ownership marker
 
@@ -93,6 +100,8 @@ been vouched for within `SYNC_GRACE_SECONDS`. Records without a timestamp
 - the response lists `healed`, `refreshed`, `expunged` and `unverifiable`
   (marker-prefixed records whose hash doesn't verify; these are never touched
   and need manual cleanup)
+- syncs do not overlap: a request arriving while one is running is `409`, and
+  a failure talking to the nameserver is `502`
 
 Set `SYNC_GRACE_SECONDS` to 2–3× the sync schedule interval: a host missing
 from a single sync (snapshot race, failed request) stays protected until well
@@ -100,7 +109,34 @@ past the next one. `/health` reports the age and result of the last applied
 sync. Roll out by running a sync with `dry_run` first and reviewing the
 response before enabling the schedule.
 
-Mikrotik RouterOS scheduler script for feeding the sync:
+## Mikrotik RouterOS
+
+### Lease script
+
+For use as a [RouterOS DHCP Server](https://wiki.mikrotik.com/wiki/Manual:IP/DHCP_Server#General)
+lease script, firing `/register_host` and `/deregister_host` on lease events:
+
+```
+:local webservice "https://dhcp-dns.example.local"
+:local token "xxx"
+
+if ([:len $"lease-hostname"] > 0) do={
+  :local action
+  if ($leaseBound = "1") do={
+    :set action "register_host"
+  } else={
+    :set action "deregister_host"
+  }
+
+  /tool fetch http-method=post keep-result=no http-header-field="Authorization: Basic $($token)" http-data="hostname=$($"lease-hostname")&ip_address=$($leaseActIP)" url="$($webservice)/$($action)"
+}
+```
+
+(this script needs `read` and `test` permissions if run as a system script)
+
+### Sync scheduler script
+
+For use as a scheduler script feeding `/sync_hosts` the full lease table:
 
 ```
 :local webservice "https://dhcp-dns.example.local"
@@ -139,6 +175,27 @@ needs the same filter, since a posted host outside the declared networks
 rejects the request. Each DHCP network must also be at least as narrow as
 the app's `PREFIX_LENGTH`.
 
+## Running
+
+CI publishes:
+
+```text
+ghcr.io/lexbrugman/dhcp-dns-helper:sha-<git-sha>
+ghcr.io/lexbrugman/dhcp-dns-helper:latest
+```
+
+Build locally:
+
+```sh
+docker build --build-arg GIT_SHA="$(git rev-parse HEAD)" -t ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)" .
+```
+
+Run locally:
+
+```sh
+docker run --rm --env-file env.example -p 8080:8080 ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)"
+```
+
 ## Tests
 
 ```sh
@@ -148,35 +205,3 @@ python -m pytest tests/ -v
 
 The integration tests spin up a throwaway BIND via testcontainers and are
 skipped automatically when no container API socket is reachable.
-
-## Build locally
-
-```sh
-docker build --build-arg GIT_SHA="$(git rev-parse HEAD)" -t ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)" .
-```
-
-## Run locally
-
-```sh
-docker run --rm --env-file env.example -p 8080:8080 ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)"
-```
-
-Mikrotik RouterOS
------------------
-Script for using as a Mikrotik [RouterOS DHCP Server](https://wiki.mikrotik.com/wiki/Manual:IP/DHCP_Server#General) lease script:
-```
-:local webservice "https://dhcp-dns.example.local"
-:local token "xxx"
-
-if ([:len $"lease-hostname"] > 0) do={
-  :local action
-  if ($leaseBound = "1") do={
-    :set action "register_host"
-  } else={
-    :set action "deregister_host"
-  }
-
-  /tool fetch http-method=post keep-result=no http-header-field="Authorization: Basic $($token)" http-data="hostname=$($"lease-hostname")&ip_address=$($leaseActIP)" url="$($webservice)/$($action)"
-}
-```
-(this script needs `read` and `test` permissions if run as a system script)
