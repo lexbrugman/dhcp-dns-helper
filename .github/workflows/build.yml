@@ -9,9 +9,90 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+# One run at a time per ref. Two master runs must not resolve the same
+# version: the second would look up what is taken while the first has not
+# pushed its image yet, and both would publish the same tag. They queue
+# instead, and only the branches that publish nothing supersede themselves.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
+  # The one place a version is decided. The build below keys off this output:
+  # a non-empty version means "this run publishes", and nothing else looks at
+  # the branch. Anything that is not a push to master resolves to an empty
+  # string and only builds.
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      # No checkout: the version comes from the tags that already exist in the
+      # registry, which is an API call, and nothing here reads the tree.
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+              echo "$GITHUB_REF does not publish a version"
+              exit 0
+          fi
+
+          # Nothing in git records a released version — no tag, no committed
+          # version file — so the registry is the record: a version is taken
+          # if an image is already published under it. GHCR speaks the
+          # registry API, which takes the built-in token as a bearer token
+          # once base64-encoded.
+          token="$(printf '%s' "$GH_TOKEN" | base64 -w0)"
+          url="https://ghcr.io/v2/${GITHUB_REPOSITORY,,}/tags/list?n=1000"
+          body="${RUNNER_TEMP}/tags.json"
+          headers="${RUNNER_TEMP}/tags.headers"
+          taken=""
+
+          while [ -n "$url" ]; do
+              code="$(curl -sS -o "$body" -D "$headers" -w '%{http_code}' \
+                  -H "Authorization: Bearer ${token}" "$url")"
+              case "$code" in
+                  200) ;;
+                  404)
+                      # The package is created by the first push, so until
+                      # then there is nothing to list and nothing is taken.
+                      echo "no image published yet"
+                      break
+                      ;;
+                  *)
+                      # Never treated as "nothing is taken": that would
+                      # resolve to patch 0 and overwrite a published image.
+                      echo "listing tags failed with HTTP $code"
+                      cat "$body"
+                      exit 1
+                      ;;
+              esac
+
+              taken="${taken}$(jq -r '.tags[]? // empty' "$body")"$'\n'
+
+              # More tags than one page holds: the registry names the next
+              # page in a Link header, as a path relative to its root.
+              next="$(tr -d '\r' < "$headers" \
+                  | sed -n 's/^[Ll]ink: *<\([^>]*\)>.*rel="next".*/\1/p')"
+              url="${next:+https://ghcr.io${next}}"
+          done
+
+          year="$(date -u +%Y)"
+          # MMDD as a number: semver forbids the leading zero in "0810"
+          month_day="$((10#$(date -u +%m%d)))"
+          patch=0
+          while printf '%s\n' "$taken" | grep -qx "${year}.${month_day}.${patch}"; do
+              patch="$((patch + 1))"
+          done
+
+          version="${year}.${month_day}.${patch}"
+          echo "publishing $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -31,7 +112,10 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [version, test]
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -52,8 +136,13 @@ jobs:
         uses: docker/metadata-action@v6.2.0
         with:
           images: ghcr.io/lexbrugman/dhcp-dns-helper
+          # The version tag is the published one. The sha tag only names the
+          # runs that resolve no version — a pull request or a dispatch off a
+          # branch — none of which push; the commit a published image was
+          # built from is in its revision label, not in a tag of its own.
           tags: |
-            type=sha,prefix=sha-
+            type=raw,value=${{ needs.version.outputs.version }},enable=${{ needs.version.outputs.version != '' }}
+            type=sha,prefix=sha-,enable=${{ needs.version.outputs.version == '' }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
@@ -63,5 +152,6 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           build-args: |
             GIT_SHA=${{ github.sha }}
+            VERSION=${{ needs.version.outputs.version || 'dev' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

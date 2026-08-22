@@ -188,23 +188,33 @@ the app's `PREFIX_LENGTH`.
 
 ## Running
 
-CI publishes:
+CI publishes, on every push to `master`:
 
 ```text
-ghcr.io/lexbrugman/dhcp-dns-helper:sha-<git-sha>
+ghcr.io/lexbrugman/dhcp-dns-helper:<version>
 ghcr.io/lexbrugman/dhcp-dns-helper:latest
 ```
+
+Versions are CalVer — `<year>.<month><day>.<n>`, e.g. `2026.822.0` — and are
+decided by the build that publishes them, in one place. The date is the
+build's own; `n` counts that day's publishes from zero, and is resolved by
+asking GHCR which tags it already holds. Nothing records a version in git:
+there is no tag, no release and no committed version file, so nothing can
+drift out of step with what is published. The registry is the record, and
+what an image is stays readable from the image: `<version>` in
+`org.opencontainers.image.version`, and the commit it was built from in
+`org.opencontainers.image.revision`.
 
 Build locally:
 
 ```sh
-docker build --build-arg GIT_SHA="$(git rev-parse HEAD)" -t ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)" .
+docker build --build-arg GIT_SHA="$(git rev-parse HEAD)" -t ghcr.io/lexbrugman/dhcp-dns-helper:dev .
 ```
 
 Run locally:
 
 ```sh
-docker run --rm --env-file env.example -p 8080:8080 ghcr.io/lexbrugman/dhcp-dns-helper:sha-"$(git rev-parse --short HEAD)"
+docker run --rm --env-file env.example -p 8080:8080 ghcr.io/lexbrugman/dhcp-dns-helper:dev
 ```
 
 ## Tests

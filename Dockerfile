@@ -1,11 +1,15 @@
 FROM python:3.14-slim-bookworm@sha256:23c59390fc717bf09f9336908199a0ae75d9c4264bf296123f94ad772fea3b52
 
 ARG GIT_SHA
+# Only what a build off a checkout carries: CI passes the version it resolved,
+# and the labels docker/metadata-action attaches overwrite both of these
+# anyway. A local build is a dev build and says so.
+ARG VERSION=dev
 LABEL org.opencontainers.image.title="dhcp-dns-helper"
 LABEL org.opencontainers.image.description="HTTP wrapper around nsupdate for DHCP lease DNS updates"
 LABEL org.opencontainers.image.source="https://github.com/lexbrugman/dhcp-dns-helper"
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
-LABEL org.opencontainers.image.version="${GIT_SHA}"
+LABEL org.opencontainers.image.version="${VERSION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
