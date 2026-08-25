@@ -1,4 +1,4 @@
-FROM python:3.14-slim-bookworm@sha256:23c59390fc717bf09f9336908199a0ae75d9c4264bf296123f94ad772fea3b52
+FROM python:3.14-slim-bookworm@sha256:8e729c1805fb85b93e435f6c0ba67069e1b2cfd1ce4f72a9481f6a737434b46b
 
 ARG GIT_SHA
 # Only what a build off a checkout carries: CI passes the version it resolved,
